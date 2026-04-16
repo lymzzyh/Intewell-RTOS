@@ -25,19 +25,19 @@ board:
 
 dependencies:
   - name: kernel-libc
-    git: ${DEPS_GIT_ROOT}/components/libk.git
+    git: ${DEPS_GIT_ROOT}/libk.git
     path: dependencies/libk
-    ref: new-cmake
+    ref: main
 
   - name: lwip
-    git: ${DEPS_GIT_ROOT}/third/lwip.git
+    git: ${DEPS_GIT_ROOT}/lwip.git
     path: dependencies/lwip
     ref: origin/adaptive_for_intewell3.0
 
   - name: fs
-    git: ${DEPS_GIT_ROOT}/components/libfs.git
+    git: ${DEPS_GIT_ROOT}/libfs.git
     path: dependencies/fs
-    ref: new-cmake
+    ref: main
 
 rootfs:
   name: rootfs_aarch64
