@@ -39,6 +39,47 @@ cleanup() {
 }
 trap cleanup EXIT
 
+is_writable_or_creatable_dir() {
+  local dir="$1"
+  if [ -d "$dir" ]; then
+    [ -w "$dir" ]
+    return
+  fi
+
+  local parent
+  parent="$(dirname "$dir")"
+  [ -d "$parent" ] && [ -w "$parent" ]
+}
+
+download_and_extract_toolchain() {
+  local url="$1"
+  local extract_to="$2"
+
+  echo "[toolchain] download: $url"
+
+  if is_writable_or_creatable_dir "$extract_to"; then
+    mkdir -p "$extract_to"
+    curl -fsSL "$url" | tar xzf - -C "$extract_to"
+    return
+  fi
+
+  if [ "$(id -u)" -eq 0 ]; then
+    mkdir -p "$extract_to"
+    curl -fsSL "$url" | tar xzf - -C "$extract_to"
+    return
+  fi
+
+  if ! command -v sudo >/dev/null 2>&1; then
+    echo "[toolchain] no write permission to '$extract_to' and sudo is unavailable." >&2
+    echo "[toolchain] either grant write permission, run as root, or change extract_to to a user-writable path." >&2
+    exit 1
+  fi
+
+  echo "[toolchain] '$extract_to' requires elevated permission, retrying extract with sudo"
+  sudo mkdir -p "$extract_to"
+  curl -fsSL "$url" | sudo tar xzf - -C "$extract_to"
+}
+
 python3 - "$CONFIG_PATH" "$BOARD_INDEX" "$TMP_ENV" "$TMP_PRE_CMDS" "$TMP_POST_CMDS" <<'PY'
 import json
 import shlex
@@ -172,9 +213,7 @@ if [ -s "$TMP_PRE_CMDS" ]; then
 fi
 
 if [ -n "$TOOLCHAIN_URL" ]; then
-  echo "[toolchain] download: $TOOLCHAIN_URL"
-  mkdir -p "$TOOLCHAIN_EXTRACT_TO"
-  curl -fsSL "$TOOLCHAIN_URL" | tar xzf - -C "$TOOLCHAIN_EXTRACT_TO"
+  download_and_extract_toolchain "$TOOLCHAIN_URL" "$TOOLCHAIN_EXTRACT_TO"
 fi
 
 if [ -n "$TOOLCHAIN_BIN_PATH" ]; then
