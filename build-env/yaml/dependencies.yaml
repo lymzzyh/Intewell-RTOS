@@ -9,4 +9,4 @@
 # See the Mulan PSL v2 for more details.
 
 vars:
-  DEPS_GIT_ROOT: http://172.17.1.249/Hongdao/intewell-rtos
+  DEPS_GIT_ROOT: https://github.com/lymzzyh
