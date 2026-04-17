@@ -12,6 +12,12 @@
 import shutil
 import subprocess
 import sys
+import json
+import os
+import shlex
+import tempfile
+import urllib.request
+import time
 from pathlib import Path
 
 SCHEMA = "build-env/yaml/preset.schema.yaml"
@@ -24,6 +30,36 @@ KCFG_AUTO = "build-env/tools/kconfig_auto.py"
 VSCODE_TEMPLATE_DIR = Path("build-env/tools/vscode")
 VSCODE_TARGET_DIR = Path(".vscode")
 COMPLETION_SCRIPT = Path("build-env/tools/completion/tbox.bash")
+CI_BOARDS_CONFIG = Path("ci_boards.json")
+
+def eprint(msg: str):
+    print(msg, file=sys.stderr)
+
+
+def format_bytes(num: float):
+    units = ["B", "KB", "MB", "GB", "TB"]
+    value = float(num)
+    for unit in units:
+        if value < 1024.0 or unit == units[-1]:
+            return f"{value:.1f}{unit}"
+        value /= 1024.0
+
+
+def progress_bar(ratio: float, width: int = 28):
+    ratio = max(0.0, min(1.0, ratio))
+    filled = int(ratio * width)
+    return "[" + "#" * filled + "-" * (width - filled) + "]"
+
+
+def can_render_single_line_progress():
+    if not sys.stderr.isatty():
+        return False
+    term = os.environ.get("TERM", "").strip().lower()
+    if term in ("", "dumb"):
+        return False
+    if os.environ.get("TBOX_PROGRESS_PLAIN", "").strip() in ("1", "true", "yes", "on"):
+        return False
+    return True
 
 def find_ext_board_dirs():
     """
@@ -58,8 +94,236 @@ def usage():
         "  tbox                     # normal mode\n"
         "  tbox vscode              # copy vscode templates\n"
         "  tbox completion          # print bash completion script\n"
+        "  tbox toolchain --list [--config <my_ci_boards.json>]\n"
+        "  tbox toolchain <name> [--config <my_ci_boards.json>]\n"
         "  tbox --ext [args]        # ext mode (must be first argument)\n"
     )
+
+
+def load_toolchains(config_path: Path):
+    if not config_path.is_file():
+        raise FileNotFoundError(f"toolchains config not found: {config_path}")
+
+    with config_path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    toolchains = data.get("toolchains")
+    if not isinstance(toolchains, dict):
+        raise ValueError(f"invalid config '{config_path}': 'toolchains' must be an object")
+    return toolchains
+
+
+def parse_toolchains_args(args):
+    config = CI_BOARDS_CONFIG
+    list_only = False
+    name = None
+    i = 0
+
+    while i < len(args):
+        a = args[i]
+        if a in ("-h", "--help", "?"):
+            return {"help": True}
+        if a == "--list":
+            list_only = True
+            i += 1
+            continue
+        if a == "--config":
+            i += 1
+            if i >= len(args):
+                raise ValueError("--config requires a path")
+            config = Path(args[i])
+            i += 1
+            continue
+        if a.startswith("--config="):
+            config = Path(a.split("=", 1)[1])
+            i += 1
+            continue
+        if a.startswith("-"):
+            raise ValueError(f"unknown option: {a}")
+        if name is not None:
+            raise ValueError(f"unexpected extra argument: {a}")
+        name = a
+        i += 1
+
+    if not list_only and not name:
+        raise ValueError("missing toolchain name")
+
+    return {
+        "help": False,
+        "list_only": list_only,
+        "name": name,
+        "config": config,
+    }
+
+
+def is_writable_or_creatable_dir(path: Path):
+    if path.is_dir():
+        return os.access(path, os.W_OK)
+    parent = path.parent
+    return parent.is_dir() and os.access(parent, os.W_OK)
+
+
+def ensure_dir(path: Path):
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def run_sudo(cmd):
+    subprocess.run(["sudo", *cmd], check=True)
+
+
+def download_file(url: str, dst: Path):
+    with urllib.request.urlopen(url) as response, dst.open("wb") as f:
+        total = response.headers.get("Content-Length")
+        total_size = int(total) if total and total.isdigit() else 0
+        downloaded = 0
+        last_ts = time.monotonic()
+        last_bytes = 0
+        chunk_size = 1024 * 1024
+        use_single_line = can_render_single_line_progress()
+        refresh_interval = 0.2 if use_single_line else 1.0
+
+        if total_size > 0:
+            eprint(f"[toolchain] archive size: {format_bytes(total_size)}")
+
+        while True:
+            chunk = response.read(chunk_size)
+            if not chunk:
+                break
+            f.write(chunk)
+            downloaded += len(chunk)
+
+            now = time.monotonic()
+            if now - last_ts >= refresh_interval:
+                delta_t = now - last_ts
+                speed = (downloaded - last_bytes) / delta_t if delta_t > 0 else 0
+                if total_size > 0:
+                    percent = downloaded * 100.0 / total_size
+                    if use_single_line:
+                        line = (
+                            f"[toolchain] {progress_bar(downloaded / total_size)} "
+                            f"{percent:5.1f}% "
+                            f"{format_bytes(downloaded)}/{format_bytes(total_size)} "
+                            f"{format_bytes(speed)}/s"
+                        )
+                        sys.stderr.write(f"\r\033[2K{line}")
+                        sys.stderr.flush()
+                    else:
+                        eprint(
+                            f"[toolchain] progress: {percent:5.1f}% "
+                            f"({format_bytes(downloaded)}/{format_bytes(total_size)}) "
+                            f"speed={format_bytes(speed)}/s"
+                        )
+                else:
+                    if use_single_line:
+                        line = (
+                            f"[toolchain] {progress_bar(0.0)}  ???.?% "
+                            f"{format_bytes(downloaded)} "
+                            f"{format_bytes(speed)}/s"
+                        )
+                        sys.stderr.write(f"\r\033[2K{line}")
+                        sys.stderr.flush()
+                    else:
+                        eprint(
+                            f"[toolchain] downloaded: {format_bytes(downloaded)} "
+                            f"speed={format_bytes(speed)}/s"
+                        )
+                last_ts = now
+                last_bytes = downloaded
+
+        if use_single_line:
+            sys.stderr.write("\n")
+            sys.stderr.flush()
+
+        if total_size > 0:
+            eprint(
+                f"[toolchain] download completed: "
+                f"{format_bytes(downloaded)}/{format_bytes(total_size)}"
+            )
+        else:
+            eprint(f"[toolchain] download completed: {format_bytes(downloaded)}")
+
+
+def ensure_toolchain_installed(tc_name: str, tc: dict):
+    url = str(tc.get("url", "")).strip()
+    extract_to = Path(str(tc.get("extract_to", "/opt")).strip() or "/opt")
+    bin_path = Path(str(tc.get("bin_path", "")).strip())
+
+    if not url:
+        raise ValueError(f"toolchain '{tc_name}' missing 'url'")
+    if not str(bin_path):
+        raise ValueError(f"toolchain '{tc_name}' missing 'bin_path'")
+
+    if bin_path.is_dir():
+        eprint(f"[toolchain] found existing path: {bin_path}")
+        return bin_path
+
+    eprint(f"[toolchain] downloading '{tc_name}' from: {url}")
+    with tempfile.NamedTemporaryFile(prefix=f"{tc_name}-", suffix=".tgz", delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+
+    try:
+        download_file(url, tmp_path)
+
+        if is_writable_or_creatable_dir(extract_to):
+            eprint(f"[toolchain] extracting to: {extract_to}")
+            ensure_dir(extract_to)
+            subprocess.run(["tar", "xzf", str(tmp_path), "-C", str(extract_to)], check=True)
+        elif os.geteuid() == 0:
+            eprint(f"[toolchain] extracting to: {extract_to}")
+            ensure_dir(extract_to)
+            subprocess.run(["tar", "xzf", str(tmp_path), "-C", str(extract_to)], check=True)
+        else:
+            if shutil.which("sudo") is None:
+                raise RuntimeError(
+                    f"no write permission to '{extract_to}', and sudo is not available"
+                )
+            eprint(f"[toolchain] '{extract_to}' requires sudo permission")
+            run_sudo(["mkdir", "-p", str(extract_to)])
+            run_sudo(["tar", "xzf", str(tmp_path), "-C", str(extract_to)])
+
+    finally:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    if not bin_path.is_dir():
+        raise RuntimeError(
+            f"toolchain '{tc_name}' extracted, but bin path not found: {bin_path}"
+        )
+
+    eprint(f"[toolchain] installed: {bin_path}")
+    return bin_path
+
+
+def handle_toolchains(args):
+    parsed = parse_toolchains_args(args)
+    if parsed["help"]:
+        print(
+            "Usage:\n"
+            "  tbox toolchain --list [--config <ci_boards.json>]\n"
+            "  tbox toolchain <name> [--config <ci_boards.json>]\n\n"
+            "Examples:\n"
+            "  tbox toolchain --list\n"
+            "  tbox toolchain aarch64-musl\n"
+        )
+        return
+
+    toolchains = load_toolchains(parsed["config"])
+
+    if parsed["list_only"]:
+        for name in sorted(toolchains.keys()):
+            print(name)
+        return
+
+    name = parsed["name"]
+    if name not in toolchains:
+        names = ", ".join(sorted(toolchains.keys()))
+        raise ValueError(f"unknown toolchain '{name}', available: {names}")
+
+    bin_path = ensure_toolchain_installed(name, toolchains[name])
+    export_cmd = f"export PATH={shlex.quote(str(bin_path))}:$PATH"
+    print(f"[toolchain] 请执行以下命令设置工具链环境变量：{export_cmd}")
 
 
 def copy_vscode_templates():
@@ -135,11 +399,14 @@ def main():
             "  tbox [gen_presets args]\n"
             "  tbox vscode\n"
             "  tbox completion [bash]\n"
+            "  tbox toolchain --list [--config <ci_boards.json>]\n"
+            "  tbox toolchain <name> [--config <ci_boards.json>]\n"
             "  tbox --ext [ext args]\n\n"
             "Examples:\n"
             "  tbox\n"
             "  tbox vscode\n"
             "  source <(./tbox completion bash)\n"
+            "  tbox toolchain aarch64-musl\n"
             "  tbox -f qemu-a9.yaml\n"
             "  tbox --ext --list\n"
             "  tbox --ext --offline-export /tmp/boards-prj.tar.gz\n"
@@ -162,6 +429,14 @@ def main():
             usage()
             sys.exit(2)
         copy_vscode_templates()
+        return
+
+    if argv and argv[0] == "toolchain":
+        try:
+            handle_toolchains(argv[1:])
+        except (ValueError, FileNotFoundError, RuntimeError, json.JSONDecodeError) as e:
+            print(f"[ERROR] {e}", file=sys.stderr)
+            sys.exit(2)
         return
 
 

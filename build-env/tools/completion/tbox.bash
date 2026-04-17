@@ -30,6 +30,20 @@ _tbox_complete_yaml_files() {
     done
 }
 
+_tbox_complete_toolchains() {
+    local cfg
+    cfg="ci_boards.json"
+    if [[ -f "$cfg" ]]; then
+        python3 - "$cfg" 2>/dev/null <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    data = json.load(f)
+for k in sorted((data.get("toolchains") or {}).keys()):
+    print(k)
+PY
+    fi
+}
+
 _tbox() {
     local cur prev first
     COMPREPLY=()
@@ -39,7 +53,7 @@ _tbox() {
 
     # 一级命令补全
     if [[ ${COMP_CWORD} -eq 1 ]]; then
-        COMPREPLY=( $(compgen -W "vscode --ext completion -h --help ?" -- "$cur") )
+        COMPREPLY=( $(compgen -W "vscode --ext completion toolchain -h --help ?" -- "$cur") )
         return 0
     fi
 
@@ -49,6 +63,24 @@ _tbox() {
             COMPREPLY=( $(compgen -W "bash" -- "$cur") )
             return 0
         fi
+        return 0
+    fi
+
+    # 二级命令：toolchain
+    if [[ "$first" == "toolchain" ]]; then
+        case "$prev" in
+            --config)
+                COMPREPLY=( $(compgen -f -- "$cur") )
+                return 0
+                ;;
+        esac
+
+        if [[ "$cur" == -* ]]; then
+            COMPREPLY=( $(compgen -W "--list --config -h --help ?" -- "$cur") )
+            return 0
+        fi
+
+        COMPREPLY=( $(compgen -W "$(_tbox_complete_toolchains)" -- "$cur") )
         return 0
     fi
 

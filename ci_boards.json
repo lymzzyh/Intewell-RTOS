@@ -1,17 +1,17 @@
 {
     "toolchains": {
         "aarch64-musl": {
-            "url": "http://git.intewellos.com:8081/repository/download/Intewell-RTOS/toolchain/aarch64-linux-musl-cross.tgz",
+            "url": "https://musl.cc/aarch64-linux-musl-cross.tgz",
             "extract_to": "/opt",
             "bin_path": "/opt/aarch64-linux-musl-cross/bin"
         },
         "arm-musl": {
-            "url": "http://git.intewellos.com:8081/repository/download/Intewell-RTOS/toolchain/arm-linux-musleabihf-cross.tgz",
+            "url": "https://musl.cc/arm-linux-musleabihf-cross.tgz",
             "extract_to": "/opt",
             "bin_path": "/opt/arm-linux-musleabihf-cross/bin"
         },
         "x86_64-musl": {
-            "url": "http://git.intewellos.com:8081/repository/download/Intewell-RTOS/toolchain/x86_64-linux-musl-cross.tgz",
+            "url": "https://musl.cc/x86_64-linux-musl-cross.tgz",
             "extract_to": "/opt",
             "bin_path": "/opt/x86_64-linux-musl-cross/bin"
         }
